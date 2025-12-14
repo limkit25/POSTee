@@ -42,4 +42,12 @@
         android:backgroundTint="#2196F3"
         android:textStyle="bold"/>
 
+    <Button
+        android:id="@+id/btnSettings"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Setting Server"
+        android:backgroundTint="#FF9800"
+        android:layout_marginTop="16dp"/>
+
 </LinearLayout>

@@ -1,4 +1,4 @@
-package com.sysdos.posmajooclone // SESUAIKAN
+package com.sysdos.posmajooclone
 
 import retrofit2.Call
 import retrofit2.Retrofit
@@ -7,6 +7,25 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+
+// ==========================================
+// 1. SEMUA MODEL DATA (DITARUH DI LUAR INTERFACE)
+// ==========================================
+
+// --- PRODUK & KATEGORI ---
+data class Category(val id: Int, val name: String)
+
+data class Product(
+    val id: Int,
+    val name: String,
+    val price: Double,
+    val stock: Int,
+    val image_url: String?,
+    val category: Category?
+)
+
+// INI YANG BIKIN ERROR KEMARIN (SEKARANG SUDAH DILUAR)
+data class ProductResponse(val data: List<Product>)
 
 // --- LOGIN ---
 data class LoginRequest(val email: String, val password: String)
@@ -20,77 +39,130 @@ data class StartShiftRequest(val user_id: Int, val initial_cash: Double)
 data class StartShiftResponse(val shift: ShiftData)
 data class EndShiftRequest(val shift_id: Int)
 data class EndShiftResponse(val rekap: RekapData)
-data class RekapData(
-    val total_sales: Double,      // Total Omzet
-    val total_cash_sales: Double  // Total Uang Tunai Saja
-)
+data class RekapData(val total_sales: Double, val total_cash_sales: Double)
 
-// --- PRODUK ---
-data class ProductResponse(val data: List<Product>)
-data class Product(val id: Int, val name: String, val price: Double, val stock: Int, val category: Category?)
-data class Category(val id: Int, val name: String)
+// --- SETTING ---
+data class SettingResponse(val id: Int, val tax_rate: Double, val is_tax_enabled: Boolean, val is_discount_enabled: Boolean)
 
-// --- CHECKOUT ---
+// --- TRANSAKSI (REQUEST) ---
+data class CheckoutDetail(val product_id: Int, val qty: Int, val price_at_transaction: Double)
+
 data class CheckoutRequest(
-    val shift_id: Int,
+    val shift_id: Int?,
     val invoice_number: String,
-    val subtotal: Double,       // Baru
-    val discount_amount: Double,// Baru
-    val tax_amount: Double,     // Baru
-    val total_amount: Double,   // Grand Total
+    val subtotal: Double,
+    val discount_amount: Double,
+    val tax_amount: Double,
+    val total_amount: Double,
     val cashier_name: String,
     val payment_method: String,
     val details: List<CheckoutDetail>
 )
-data class CheckoutDetail(val product_id: Int, val qty: Int, val price_at_transaction: Double)
 
-// --- HISTORY (MODEL INI YANG BIKIN ERROR KALAU TIDAK LENGKAP) ---
-data class TransactionResponse(val data: List<TransactionItem>)
-
-data class TransactionItem(
-    val id: Int,
+// --- TRANSAKSI (RESPONSE STRUK) ---
+data class TransactionResponse(
+    val message: String,
+    val transaction_id: Int,
     val invoice_number: String,
     val total_amount: Double,
-    val cashier_name: String,   // WAJIB ADA
-    val payment_method: String, // WAJIB ADA
-    val created_at: String,
-    val details: List<HistoryDetail>
+    val subtotal: Double,
+    val discount_amount: Double,
+    val tax_amount: Double,
+    val created_at: String
 )
+
+// --- HISTORY (RIWAYAT) ---
+data class HistoryResponse(val data: List<TransactionItem>) // Wrapper untuk history
 
 data class HistoryDetail(
     val id: Int,
     val qty: Int,
     val price_at_transaction: Double,
-    val product: Product // Relasi Nama Produk
+    val product: Product?
 )
-data class SettingResponse(
+
+data class TransactionItem(
     val id: Int,
-    val tax_rate: Double,
-    val is_tax_enabled: Boolean,
-    val is_discount_enabled: Boolean
+    val invoice_number: String,
+    val total_amount: Double,
+    val subtotal: Double,
+    val discount_amount: Double,
+    val tax_amount: Double,
+    val cashier_name: String,
+    val payment_method: String,
+    val created_at: String,
+    val details: List<HistoryDetail>
 )
+data class SyncShiftResponse(
+    val total_cash: Double,
+    val total_non_cash: Double
+)
+data class ChartData(val date: String, val total: Double)
+data class DashboardResponse(val data: List<ChartData>)
 
-
-
-// --- API INTERFACE ---
+// ==========================================
+// 2. INTERFACE API
+// ==========================================
 interface ApiService {
-    @POST("/login") fun loginUser(@Body request: LoginRequest): Call<LoginResponse>
+    @POST("/login")
+    fun loginUser(@Body request: LoginRequest): Call<LoginResponse>
 
-    // Shift
-    @GET("/shift/check/{user_id}") fun checkShift(@Path("user_id") userId: Int): Call<CheckShiftResponse>
-    @POST("/shift/start") fun startShift(@Body request: StartShiftRequest): Call<StartShiftResponse>
-    @POST("/shift/end") fun endShift(@Body request: EndShiftRequest): Call<EndShiftResponse>
+    // PRODUK (Pastikan return Call<ProductResponse>)
+    @GET("/products")
+    fun getProducts(): Call<ProductResponse>
 
-    // Transaksi
-    @GET("/products") fun getProducts(): Call<ProductResponse>
-    @POST("/checkout") fun createTransaction(@Body request: CheckoutRequest): Call<Any>
-    @GET("/transactions") fun getTransactions(): Call<TransactionResponse>
-    @GET("/settings") fun getSettings(): Call<SettingResponse>
+    // SHIFT
+    @GET("/shift/check/{user_id}")
+    fun checkShift(@Path("user_id") userId: Int): Call<CheckShiftResponse>
+
+    @POST("/shift/start")
+    fun startShift(@Body request: StartShiftRequest): Call<StartShiftResponse>
+
+    @POST("/shift/end")
+    fun endShift(@Body request: EndShiftRequest): Call<EndShiftResponse>
+
+    // TRANSAKSI
+    @POST("/checkout")
+    fun createTransaction(@Body request: CheckoutRequest): Call<TransactionResponse>
+
+    @GET("/transactions")
+    fun getTransactions(): Call<HistoryResponse>
+
+    // SETTING
+    @GET("/settings")
+    fun getSettings(): Call<SettingResponse>
+
+    @GET("/shift/sync/{id}")
+    fun syncShift(@retrofit2.http.Path("id") shiftId: Int): Call<SyncShiftResponse>
+
+    @GET("/api/dashboard")
+    fun getDashboard(): Call<DashboardResponse>
 }
 
+// ==========================================
+// 3. RETROFIT CLIENT
+// ==========================================
+// GANTI object RetrofitClient dengan class ini:
 object RetrofitClient {
-    private const val BASE_URL = "http://127.0.0.1:8080/"
-    val instance: ApiService by lazy {
-        Retrofit.Builder().baseUrl(BASE_URL).addConverterFactory(GsonConverterFactory.create()).build().create(ApiService::class.java)
+    private var retrofit: Retrofit? = null
+
+    // Fungsi ini akan dipanggil oleh Activity untuk minta koneksi
+    fun api(context: android.content.Context): ApiService {
+        if (retrofit == null) {
+            // Ambil IP dari Settingan User
+            val prefs = context.getSharedPreferences("POS_PREFS", android.content.Context.MODE_PRIVATE)
+            val baseUrl = prefs.getString("BASE_URL", "http://192.168.1.8:8080/")!! // Default IP
+
+            retrofit = Retrofit.Builder()
+                .baseUrl(baseUrl)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+        }
+        return retrofit!!.create(ApiService::class.java)
+    }
+
+    // Fungsi untuk memaksa reset (saat ganti IP)
+    fun reset() {
+        retrofit = null
     }
 }

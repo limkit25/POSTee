@@ -12,7 +12,7 @@ import java.util.Locale
 
 class HistoryAdapter(
     private var list: List<TransactionItem>,
-    private val onItemClick: (TransactionItem) -> Unit // <--- TAMBAHAN: Listener Klik
+    private val onItemClick: (TransactionItem) -> Unit
 ) : RecyclerView.Adapter<HistoryAdapter.ViewHolder>() {
 
     class ViewHolder(v: View) : RecyclerView.ViewHolder(v) {
@@ -23,7 +23,7 @@ class HistoryAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        // Pastikan Anda punya layout item_history.xml (Layout baris list biasa)
+        // Pastikan nama layout xml benar: item_history
         val v = LayoutInflater.from(parent.context).inflate(R.layout.item_history, parent, false)
         return ViewHolder(v)
     }
@@ -34,7 +34,7 @@ class HistoryAdapter(
         holder.tvInv.text = item.invoice_number
         holder.tvTotal.text = NumberFormat.getCurrencyInstance(Locale("in", "ID")).format(item.total_amount)
 
-        // Format Tanggal (Dari ISO ke Human Readable)
+        // Format Tanggal
         try {
             val parser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
             val formatter = SimpleDateFormat("dd MMM HH:mm", Locale.getDefault())
@@ -44,14 +44,16 @@ class HistoryAdapter(
             holder.tvDate.text = item.created_at
         }
 
-        // Tampilkan Metode Bayar
+        // Warna Status Pembayaran
         holder.tvStatus.text = item.payment_method
-        if (item.payment_method == "TUNAI") holder.tvStatus.setTextColor(Color.parseColor("#4CAF50"))
-        else holder.tvStatus.setTextColor(Color.parseColor("#2196F3"))
+        if (item.payment_method == "TUNAI") {
+            holder.tvStatus.setTextColor(Color.parseColor("#4CAF50")) // Hijau
+        } else {
+            holder.tvStatus.setTextColor(Color.parseColor("#2196F3")) // Biru
+        }
 
-        // --- KLIK BARIS UNTUK LIHAT DETAIL ---
         holder.itemView.setOnClickListener {
-            onItemClick(item) // Kirim data item ke Activity
+            onItemClick(item)
         }
     }
 

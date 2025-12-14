@@ -1,4 +1,4 @@
-package com.sysdos.posmajooclone // PASTIKAN SESUAI DENGAN PACKAGE ANDA
+package com.sysdos.posmajooclone
 
 import android.content.Intent
 import android.os.Bundle
@@ -19,7 +19,16 @@ class LoginActivity : AppCompatActivity() {
         val etEmail = findViewById<EditText>(R.id.etEmail)
         val etPassword = findViewById<EditText>(R.id.etPassword)
         val btnLogin = findViewById<Button>(R.id.btnLogin)
+        val btnSettings = findViewById<Button>(R.id.btnSettings) // <-- Tombol Baru
 
+        // 1. LOGIKA TOMBOL SETTING
+        btnSettings.setOnClickListener {
+            // Pindah ke Halaman SettingsActivity
+            val intent = Intent(this, SettingsActivity::class.java)
+            startActivity(intent)
+        }
+
+        // 2. LOGIKA LOGIN
         btnLogin.setOnClickListener {
             val email = etEmail.text.toString()
             val password = etPassword.text.toString()
@@ -30,19 +39,20 @@ class LoginActivity : AppCompatActivity() {
             }
 
             val request = LoginRequest(email, password)
-            RetrofitClient.instance.loginUser(request).enqueue(object : Callback<LoginResponse> {
+
+            // PENTING: Gunakan .api(this) agar IP ikut settingan
+            RetrofitClient.api(this).loginUser(request).enqueue(object : Callback<LoginResponse> {
                 override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
                     if (response.isSuccessful) {
                         val user = response.body()?.user
                         Toast.makeText(applicationContext, "Halo, ${user?.name}!", Toast.LENGTH_SHORT).show()
 
-                        // Pindah ke Menu Utama (BAWA ID & NAMA UNTUK SHIFT/TRANSAKSI)
                         val intent = Intent(this@LoginActivity, MainActivity::class.java)
                         intent.putExtra("USER_ID", user?.id)
                         intent.putExtra("USER_NAME", user?.name)
 
                         startActivity(intent)
-                        finish() // Agar user tidak bisa kembali ke login pakai tombol back
+                        finish()
                     } else {
                         Toast.makeText(applicationContext, "Login Gagal! Cek Email/Pass", Toast.LENGTH_SHORT).show()
                     }
