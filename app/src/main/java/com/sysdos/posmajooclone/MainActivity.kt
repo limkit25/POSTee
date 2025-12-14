@@ -1,4 +1,4 @@
-package com.sysdos.posmajooclone // PASTIKAN PACKAGE SESUAI
+package com.sysdos.posmajooclone
 
 import android.Manifest
 import android.content.Context
@@ -10,7 +10,6 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
-import android.util.DisplayMetrics
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -26,7 +25,6 @@ import com.dantsu.escposprinter.connection.bluetooth.BluetoothPrintersConnection
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
-import com.sysdos.posmajooclone.TransactionResponse
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -50,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     // --- STATE SHIFT & USER ---
     private var cashierName: String = "Kasir"
     private var userId: Int = 0
+    private var userRole: String = "staff" // Role User
     private var currentShiftId: Int = 0
     private var currentInitialCash: Double = 0.0
 
@@ -75,8 +74,9 @@ class MainActivity : AppCompatActivity() {
         // 1. TANGKAP DATA LOGIN
         cashierName = intent.getStringExtra("USER_NAME") ?: "Admin"
         userId = intent.getIntExtra("USER_ID", 0)
+        userRole = intent.getStringExtra("USER_ROLE") ?: "staff"
 
-        // 2. INISIALISASI VIEW (PENTING: Semua findViewById harus di sini)
+        // 2. INISIALISASI VIEW
         tvTotalAmount = findViewById(R.id.tvTotalAmount)
         btnCheckout = findViewById(R.id.btnCheckout)
         btnHistory = findViewById(R.id.btnHistory)
@@ -87,9 +87,24 @@ class MainActivity : AppCompatActivity() {
         // 3. SETUP RECYCLERVIEW
         val spanCount = calculateNoOfColumns(this, 170f)
         rvProducts.layoutManager = GridLayoutManager(this, spanCount)
+
+        // Setup Adapter dengan Logika Edit Produk (Long Click)
         productAdapter = ProductAdapter(listOf(),
-            { product -> addToCart(product) },
-            { product -> removeFromCart(product) }
+            { product -> addToCart(product) }, // Klik Biasa = Tambah Keranjang
+            { product ->
+                // Klik Lama = Edit Produk (Hanya Admin/Manager)
+                if (userRole == "admin" || userRole == "manager") {
+                    val intent = Intent(this, EditProductActivity::class.java)
+                    intent.putExtra("ID", product.id)
+                    intent.putExtra("NAME", product.name)
+                    intent.putExtra("PRICE", product.price)
+                    intent.putExtra("STOCK", product.stock)
+                    intent.putExtra("CAT_ID", product.category?.id ?: 1)
+                    startActivity(intent)
+                } else {
+                    Toast.makeText(this, "Akses Edit Ditolak (Hanya Admin/Manager)", Toast.LENGTH_SHORT).show()
+                }
+            }
         )
         rvProducts.adapter = productAdapter
 
@@ -101,8 +116,8 @@ class MainActivity : AppCompatActivity() {
         fetchSettings()
     }
 
-    // VERSI AMAN: Kalau server error/kosong, pakai default
     private fun fetchSettings() {
+        // PERBAIKAN: Gunakan .api(this)
         RetrofitClient.api(this).getSettings().enqueue(object : Callback<SettingResponse> {
             override fun onResponse(call: Call<SettingResponse>, response: Response<SettingResponse>) {
                 if (response.isSuccessful && response.body() != null) {
@@ -110,18 +125,10 @@ class MainActivity : AppCompatActivity() {
                     globalTaxRate = config.tax_rate
                     isTaxEnabled = config.is_tax_enabled
                     isDiscountEnabled = config.is_discount_enabled
-                } else {
-                    // Kalau gagal ambil, pakai default (Mati semua biar aman)
-                    globalTaxRate = 0.0
-                    isTaxEnabled = false
-                    isDiscountEnabled = false
                 }
             }
             override fun onFailure(call: Call<SettingResponse>, t: Throwable) {
-                // Kalau koneksi putus, pakai default juga
-                globalTaxRate = 0.0
-                isTaxEnabled = false
-                isDiscountEnabled = false
+                // Ignore error, pakai default
             }
         })
     }
@@ -132,7 +139,7 @@ class MainActivity : AppCompatActivity() {
 
         btnCheckout.setOnClickListener {
             if (cartList.isEmpty()) Toast.makeText(this, "Keranjang kosong!", Toast.LENGTH_SHORT).show()
-            else showCartDialog() // BUKA DIALOG KERANJANG BARU
+            else showCartDialog()
         }
 
         tvTotalAmount.setOnClickListener {
@@ -146,14 +153,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ==========================================
-    // BAGIAN KERANJANG & HITUNG-HITUNGAN
+    // KERANJANG & HITUNGAN
     // ==========================================
-
     private fun showCartDialog() {
         val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_cart_list, null)
         val dialog = AlertDialog.Builder(this).setView(dialogView).create()
 
-        // Bind View
         val rvCart = dialogView.findViewById<RecyclerView>(R.id.rvCartItems)
         val tvSub = dialogView.findViewById<TextView>(R.id.tvCartSubtotal)
         val etDisc = dialogView.findViewById<EditText>(R.id.etDiscountInput)
@@ -163,49 +168,86 @@ class MainActivity : AppCompatActivity() {
         val llDisc = dialogView.findViewById<LinearLayout>(R.id.llDiscountContainer)
         val llTax = dialogView.findViewById<LinearLayout>(R.id.llTaxContainer)
 
-        // Setup List
-        val groupedList = cartList.groupBy { it.id }.map { (_, items) -> CartItemDisplay(items.first().name, items.first().price, items.size) }
+        // Setup Layout Manager
         rvCart.layoutManager = LinearLayoutManager(this)
-        rvCart.adapter = CartAdapter(groupedList)
 
-        // VISIBILITY BERDASARKAN SETTING BACKEND
+        // VISIBILITY BERDASARKAN SETTING
         llTax.visibility = if (isTaxEnabled) View.VISIBLE else View.GONE
         llDisc.visibility = if (isDiscountEnabled) View.VISIBLE else View.GONE
         tvTaxLbl.text = "Pajak ($globalTaxRate%)"
 
-        // FUNGSI HITUNG REALTIME
-        fun recalculate() {
-            tempSubtotal = cartList.sumOf { it.price }
+        // FUNGSI UPDATE UI (Dipanggil setiap ada perubahan)
+        fun refreshCartUI() {
+            // 1. Kelompokkan Data Terbaru
+            val groupedList = cartList.groupBy { it.id }
+                .map { (id, items) ->
+                    CartItemDisplay(id, items.first().name, items.first().price, items.size)
+                }
 
-            // Ambil input diskon (hanya jika enabled)
+            // 2. Pasang Adapter dengan Logic Edit/Hapus
+            val adapter = CartAdapter(groupedList,
+                onPlus = { prodId ->
+                    // Cari produk asli dari list lengkap
+                    val product = fullProductList.find { it.id == prodId }
+                    if (product != null) {
+                        cartList.add(product) // Tambah 1 lagi ke keranjang
+                        refreshCartUI() // Refresh
+                    }
+                },
+                onMinus = { prodId ->
+                    // Hapus 1 instance produk ini
+                    val index = cartList.indexOfFirst { it.id == prodId }
+                    if (index != -1) {
+                        cartList.removeAt(index)
+                        refreshCartUI() // Refresh
+                    }
+                },
+                onDelete = { prodId ->
+                    // Hapus SEMUA produk dengan ID ini
+                    cartList.removeAll { it.id == prodId }
+                    refreshCartUI() // Refresh
+
+                    if (cartList.isEmpty()) dialog.dismiss() // Tutup jika kosong
+                }
+            )
+            rvCart.adapter = adapter
+
+            // 3. Hitung Ulang Angka Rupiah
+            tempSubtotal = cartList.sumOf { it.price }
             val inputDisc = if (isDiscountEnabled && etDisc.text.isNotEmpty()) etDisc.text.toString().toDoubleOrNull() ?: 0.0 else 0.0
             tempDiscount = inputDisc
 
-            // Hitung Pajak: (Subtotal - Diskon) * Rate%
             val taxableAmount = if ((tempSubtotal - tempDiscount) > 0) (tempSubtotal - tempDiscount) else 0.0
             tempTax = if (isTaxEnabled) (taxableAmount * (globalTaxRate / 100)) else 0.0
-
             tempGrandTotal = tempSubtotal - tempDiscount + tempTax
 
-            // Update UI
+            // Update Teks
             tvSub.text = formatRupiah(tempSubtotal)
             tvTaxVal.text = formatRupiah(tempTax)
             tvGrand.text = formatRupiah(tempGrandTotal)
+
+            // Update Dashboard Utama juga (biar tombol Bayar update)
+            updateTotalUI()
         }
 
-        recalculate() // Hitung awal
+        // Panggil pertama kali
+        refreshCartUI()
 
-        // Listener jika user mengetik diskon
+        // Listener Diskon
         etDisc.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) { recalculate() }
+            override fun afterTextChanged(s: Editable?) { refreshCartUI() }
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
 
         dialogView.findViewById<Button>(R.id.btnCartBack).setOnClickListener { dialog.dismiss() }
         dialogView.findViewById<Button>(R.id.btnCartPay).setOnClickListener {
-            dialog.dismiss()
-            showPaymentDialog() // Lanjut ke Pembayaran membawa nilai tempGrandTotal
+            if (cartList.isNotEmpty()) {
+                dialog.dismiss()
+                showPaymentDialog()
+            } else {
+                Toast.makeText(this, "Keranjang Kosong", Toast.LENGTH_SHORT).show()
+            }
         }
         dialog.show()
     }
@@ -214,51 +256,27 @@ class MainActivity : AppCompatActivity() {
         val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_payment, null)
         val dialog = AlertDialog.Builder(this).setView(dialogView).create(); dialog.setCancelable(false)
 
-        // --- BINDING VIEW ---
         val etCash = dialogView.findViewById<EditText>(R.id.etCashReceived)
         val tvChange = dialogView.findViewById<TextView>(R.id.tvChange)
         val btnProcess = dialogView.findViewById<Button>(R.id.btnProcessPayment)
         val layoutCash = dialogView.findViewById<LinearLayout>(R.id.layoutCashInput)
         val rgMethod = dialogView.findViewById<RadioGroup>(R.id.rgPaymentMethod)
+        val tvTotal = dialogView.findViewById<TextView>(R.id.tvDialogTotal)
 
-        // VIEW RINCIAN
+        // Rincian
         val tvSub = dialogView.findViewById<TextView>(R.id.tvDetailSubtotal)
         val tvTax = dialogView.findViewById<TextView>(R.id.tvDetailTax)
         val llTax = dialogView.findViewById<LinearLayout>(R.id.layoutDetailTax)
-
-        // View Diskon (Baru)
         val tvDisc = dialogView.findViewById<TextView>(R.id.tvDetailDiscount)
         val llDisc = dialogView.findViewById<LinearLayout>(R.id.layoutDetailDiscount)
 
-        val tvTotal = dialogView.findViewById<TextView>(R.id.tvDialogTotal)
-
-        // --- ISI DATA KE VIEW ---
         val totalToPay = tempGrandTotal
-
-        // 1. Subtotal
         tvSub.text = formatRupiah(tempSubtotal)
-
-        // 2. Diskon (Cek kalau ada diskon)
-        if (tempDiscount > 0) {
-            llDisc.visibility = View.VISIBLE
-            tvDisc.text = "- ${formatRupiah(tempDiscount)}" // Tambah minus di depan
-        } else {
-            llDisc.visibility = View.GONE
-        }
-
-        // 3. Pajak (Cek kalau ada pajak)
-        if (tempTax > 0) {
-            llTax.visibility = View.VISIBLE
-            tvTax.text = formatRupiah(tempTax)
-        } else {
-            llTax.visibility = View.GONE
-        }
-
-        // 4. Total Besar
         tvTotal.text = formatRupiah(totalToPay)
 
+        if (tempDiscount > 0) { llDisc.visibility = View.VISIBLE; tvDisc.text = "- ${formatRupiah(tempDiscount)}" } else llDisc.visibility = View.GONE
+        if (tempTax > 0) { llTax.visibility = View.VISIBLE; tvTax.text = formatRupiah(tempTax) } else llTax.visibility = View.GONE
 
-        // --- LOGIKA PEMBAYARAN ---
         rgMethod.setOnCheckedChangeListener { _, id ->
             if (id == R.id.rbCash) {
                 layoutCash.visibility = View.VISIBLE; btnProcess.isEnabled = false; btnProcess.setBackgroundColor(Color.GRAY)
@@ -295,15 +313,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendTransactionToServer(method: String, cash: Double, change: Double) {
-        // Siapkan detail belanja
-        val details = cartList.groupBy { it.id }.map {
-            CheckoutDetail(it.key, it.value.size, it.value.first().price)
-        }
-
-        // Buat nomor invoice dummy (akan ditimpa backend sebenarnya, tapi butuh dikirim)
+        val details = cartList.groupBy { it.id }.map { CheckoutDetail(it.key, it.value.size, it.value.first().price) }
         val inv = "INV-${System.currentTimeMillis()}"
 
-        // Siapkan Request
         val req = CheckoutRequest(
             shift_id = currentShiftId,
             invoice_number = inv,
@@ -316,91 +328,49 @@ class MainActivity : AppCompatActivity() {
             details = details
         )
 
-        // Panggil Retrofit
-        // ERROR MERAH BIASANYA DISINI JIKA ApiService BELUM DIUPDATE
+        // PERBAIKAN: Gunakan .api(this)
         RetrofitClient.api(this).createTransaction(req).enqueue(object : Callback<TransactionResponse> {
             override fun onResponse(call: Call<TransactionResponse>, response: Response<TransactionResponse>) {
                 if (response.isSuccessful && response.body() != null) {
-                    val trxData = response.body()!! // Data lengkap (termasuk pajak/diskon dari server)
-
-                    // Update Shift Lokal
-                    if (method == "TUNAI") {
-                        localCashSales += tempGrandTotal
-                    } else {
-                        localNonCashSales += tempGrandTotal
-                    }
-
-                    // Panggil Dialog Struk
+                    val trxData = response.body()!!
+                    // Update Shift Lokal (Opsional, karena nanti pakai sync)
+                    if (method == "TUNAI") localCashSales += tempGrandTotal else localNonCashSales += tempGrandTotal
                     showReceiptDialog(trxData, method, cash, change)
-                } else {
-                    Toast.makeText(applicationContext, "Gagal Transaksi: ${response.code()}", Toast.LENGTH_SHORT).show()
-                }
+                } else Toast.makeText(applicationContext, "Gagal Transaksi", Toast.LENGTH_SHORT).show()
             }
-            override fun onFailure(call: Call<TransactionResponse>, t: Throwable) {
-                Toast.makeText(applicationContext, "Error Server: ${t.message}", Toast.LENGTH_SHORT).show()
-            }
+            override fun onFailure(call: Call<TransactionResponse>, t: Throwable) { Toast.makeText(applicationContext, "Error Server", Toast.LENGTH_SHORT).show() }
         })
     }
-
-    // ==========================================
-    // BAGIAN PRINTING (STRUK LENGKAP)
-    // ==========================================
 
     private fun showReceiptDialog(data: TransactionResponse, method: String, cash: Double, change: Double) {
         val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_receipt, null)
         val dialog = AlertDialog.Builder(this).setView(dialogView).setCancelable(false).create()
 
-        // Binding ID (Harus sama persis dengan dialog_receipt.xml)
         val tvInvoice = dialogView.findViewById<TextView>(R.id.tvRcInvoice)
         val tvCashier = dialogView.findViewById<TextView>(R.id.tvRcCashier)
         val tvItems = dialogView.findViewById<TextView>(R.id.tvRcItems)
-
         val tvSub = dialogView.findViewById<TextView>(R.id.tvRcSubtotal)
         val tvDisc = dialogView.findViewById<TextView>(R.id.tvRcDiscount)
         val layoutDisc = dialogView.findViewById<LinearLayout>(R.id.layoutRcDiscount)
         val tvTax = dialogView.findViewById<TextView>(R.id.tvRcTax)
         val layoutTax = dialogView.findViewById<LinearLayout>(R.id.layoutRcTax)
-
         val tvTotal = dialogView.findViewById<TextView>(R.id.tvRcTotal)
         val tvPayLabel = dialogView.findViewById<TextView>(R.id.tvRcPayLabel)
         val tvPay = dialogView.findViewById<TextView>(R.id.tvRcPay)
         val tvChange = dialogView.findViewById<TextView>(R.id.tvRcChange)
-
         val btnClosePrint = dialogView.findViewById<Button>(R.id.btnRcClose)
 
-        // Isi Data
         tvInvoice.text = data.invoice_number
-        tvCashier.text = cashierName // Nama kasir dari login
+        tvCashier.text = cashierName
         tvTotal.text = formatRupiah(data.total_amount)
-
-        // Subtotal, Pajak, Diskon (Dari Response Server)
         tvSub.text = formatRupiah(data.subtotal)
 
-        if (data.discount_amount > 0) {
-            layoutDisc.visibility = View.VISIBLE
-            tvDisc.text = "- ${formatRupiah(data.discount_amount)}"
-        } else {
-            layoutDisc.visibility = View.GONE
-        }
+        if (data.discount_amount > 0) { layoutDisc.visibility = View.VISIBLE; tvDisc.text = "- ${formatRupiah(data.discount_amount)}" } else layoutDisc.visibility = View.GONE
+        if (data.tax_amount > 0) { layoutTax.visibility = View.VISIBLE; tvTax.text = formatRupiah(data.tax_amount) } else layoutTax.visibility = View.GONE
 
-        if (data.tax_amount > 0) {
-            layoutTax.visibility = View.VISIBLE
-            tvTax.text = formatRupiah(data.tax_amount)
-        } else {
-            layoutTax.visibility = View.GONE
-        }
-
-        // Info Bayar
-        if (method == "TUNAI") {
-            tvPayLabel.text = "Tunai:"
-            tvPay.text = formatRupiah(cash)
-        } else {
-            tvPayLabel.text = "Bayar via:"
-            tvPay.text = method
-        }
+        if (method == "TUNAI") { tvPayLabel.text = "Tunai:"; tvPay.text = formatRupiah(cash) } else { tvPayLabel.text = "Bayar via:"; tvPay.text = method }
         tvChange.text = formatRupiah(change)
 
-        // List Item (Ambil dari keranjang saat ini karena detail item tidak dikirim balik full oleh server standar)
         val sb = StringBuilder()
         cartList.groupBy { it.name }.forEach { (name, items) ->
             val totalItemPrice = items.size * items.first().price
@@ -408,22 +378,14 @@ class MainActivity : AppCompatActivity() {
         }
         tvItems.text = sb.toString()
 
-        // Tombol Tutup & Print
         btnClosePrint.setOnClickListener {
-            printStrukBluetooth(data, method, cash, change) // Fungsi print
-
+            printStrukBluetooth(data, method, cash, change)
             dialog.dismiss()
-
-            // Reset Transaksi setelah struk ditutup
             cartList.clear()
-            tempSubtotal = 0.0
-            tempDiscount = 0.0
-            tempTax = 0.0
-            tempGrandTotal = 0.0
-            updateTotalUI() // Pastikan fungsi ini ada untuk reset tampilan dashboard
+            tempSubtotal = 0.0; tempDiscount = 0.0; tempTax = 0.0; tempGrandTotal = 0.0
+            updateTotalUI()
             Toast.makeText(this, "Transaksi Selesai", Toast.LENGTH_SHORT).show()
         }
-
         dialog.show()
     }
 
@@ -448,20 +410,14 @@ class MainActivity : AppCompatActivity() {
                     [C]--------------------------------
                 """.trimIndent()
 
-                // Loop Barang
                 cartList.groupBy { it.name }.forEach { (name, items) ->
                     text += "\n[L]${items.size}x $name[R]${formatRupiah(items.size * items.first().price)}"
                 }
 
                 text += "\n[C]--------------------------------"
                 text += "\n[L]Subtotal[R]${formatRupiah(data.subtotal)}"
-
-                if (data.discount_amount > 0) {
-                    text += "\n[L]Diskon[R]-${formatRupiah(data.discount_amount)}"
-                }
-                if (data.tax_amount > 0) {
-                    text += "\n[L]Pajak[R]${formatRupiah(data.tax_amount)}"
-                }
+                if (data.discount_amount > 0) text += "\n[L]Diskon[R]-${formatRupiah(data.discount_amount)}"
+                if (data.tax_amount > 0) text += "\n[L]Pajak[R]${formatRupiah(data.tax_amount)}"
 
                 text += """
                     
@@ -470,92 +426,122 @@ class MainActivity : AppCompatActivity() {
                     [L]Kembali[R]${formatRupiah(change)}
                     [C]================================
                     [C]Terima Kasih
-                    [C]Barang yang dibeli tidak dapat
-                    [C]ditukar/dikembalikan.
                 """.trimIndent()
-
                 printer.printFormattedText(text)
                 printer.disconnectPrinter()
-            } else {
-                Toast.makeText(this, "Printer tidak terhubung", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(this, "Gagal Print: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
+            } else Toast.makeText(this, "Printer tidak terhubung", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     // ==========================================
     // HELPERS & SHIFT
     // ==========================================
     private fun addToCart(p: Product) { cartList.add(p); updateTotalUI() }
-    private fun removeFromCart(p: Product) { if (cartList.contains(p)) { cartList.remove(p); updateTotalUI(); Toast.makeText(this, "Dihapus", Toast.LENGTH_SHORT).show() } }
 
-    private fun checkOpenShift() { RetrofitClient.api(this).checkShift(userId).enqueue(object : Callback<CheckShiftResponse> { override fun onResponse(call: Call<CheckShiftResponse>, response: Response<CheckShiftResponse>) { if (response.isSuccessful && response.body()?.has_open_shift == true) { currentShiftId = response.body()!!.shift!!.id; currentInitialCash = response.body()!!.shift!!.initial_cash; loadProducts() } else showStartShiftDialog() }; override fun onFailure(call: Call<CheckShiftResponse>, t: Throwable) {} }) }
-    private fun showStartShiftDialog() { val input = EditText(this); input.inputType = InputType.TYPE_CLASS_NUMBER; val container = FrameLayout(this); val p = FrameLayout.LayoutParams(-1, -2); p.leftMargin=50; p.rightMargin=50; input.layoutParams=p; container.addView(input); AlertDialog.Builder(this).setTitle("Buka Toko").setView(container).setPositiveButton("BUKA"){_,_-> if(input.text.isNotEmpty()) startShiftOnServer(input.text.toString().toDouble())}.setNegativeButton("LOGOUT"){_,_-> performLogout()}.setCancelable(false).show() }
-    private fun startShiftOnServer(m: Double) { RetrofitClient.api(this).startShift(StartShiftRequest(userId, m)).enqueue(object : Callback<StartShiftResponse> { override fun onResponse(call: Call<StartShiftResponse>, response: Response<StartShiftResponse>) { if(response.isSuccessful) { currentShiftId = response.body()!!.shift.id; currentInitialCash = m; loadProducts() } }; override fun onFailure(call: Call<StartShiftResponse>, t: Throwable) {} }) }
-    private fun showLogoutOptionsDialog() {
-        val options = arrayOf("Dashboard (Grafik)", "Tutup Toko (Rekap)", "Ganti Akun", "Batal")
+    // PERBAIKAN: Gunakan .api(this)
+    private fun checkOpenShift() {
+        RetrofitClient.api(this).checkShift(userId).enqueue(object : Callback<CheckShiftResponse> {
+            override fun onResponse(call: Call<CheckShiftResponse>, response: Response<CheckShiftResponse>) {
+                if (response.isSuccessful && response.body()?.has_open_shift == true) {
+                    currentShiftId = response.body()!!.shift!!.id
+                    currentInitialCash = response.body()!!.shift!!.initial_cash
+                    loadProducts()
+                } else showStartShiftDialog()
+            }
+            override fun onFailure(call: Call<CheckShiftResponse>, t: Throwable) { showStartShiftDialog() }
+        })
+    }
 
-        AlertDialog.Builder(this)
-            .setTitle("Menu Kasir")
-            // Perhatikan: kita beri nama "dialog" di sini
-            .setItems(options) { dialog, which ->
-                when (which) {
-                    0 -> startActivity(android.content.Intent(this, DashboardActivity::class.java))
-                    1 -> fetchRecapFromServer()
-                    2 -> performLogout()
-                    3 -> dialog.dismiss() // Maka di sini juga harus "dialog", bukan "d"
+    private fun showStartShiftDialog() {
+        val input = EditText(this); input.inputType = InputType.TYPE_CLASS_NUMBER
+        val container = FrameLayout(this)
+        val p = FrameLayout.LayoutParams(-1, -2); p.leftMargin=50; p.rightMargin=50; input.layoutParams=p
+        container.addView(input)
+        AlertDialog.Builder(this).setTitle("Buka Toko").setView(container)
+            .setPositiveButton("BUKA"){_,_-> if(input.text.isNotEmpty()) startShiftOnServer(input.text.toString().toDouble())}
+            .setNegativeButton("LOGOUT"){_,_-> performLogout()}.setCancelable(false).show()
+    }
+
+    // PERBAIKAN: Gunakan .api(this)
+    private fun startShiftOnServer(m: Double) {
+        RetrofitClient.api(this).startShift(StartShiftRequest(userId, m)).enqueue(object : Callback<StartShiftResponse> {
+            override fun onResponse(call: Call<StartShiftResponse>, response: Response<StartShiftResponse>) {
+                if(response.isSuccessful) {
+                    currentShiftId = response.body()!!.shift.id
+                    currentInitialCash = m
+                    loadProducts()
                 }
             }
-            .show()
+            override fun onFailure(call: Call<StartShiftResponse>, t: Throwable) {}
+        })
     }
-    private fun fetchShiftRecapFromServer() {
-        // Tampilkan Loading kecil biar user tahu sedang proses
-        val loading = android.app.ProgressDialog(this)
-        loading.setMessage("Menghitung Rekap...")
-        loading.setCancelable(false)
-        loading.show()
 
+    private fun showLogoutOptionsDialog() {
+        val options = arrayOf("Dashboard (Grafik)", "Tutup Toko (Rekap)", "Ganti Akun", "Batal")
+        AlertDialog.Builder(this).setTitle("Menu Kasir").setItems(options) { d, which ->
+            when (which) {
+                0 -> startActivity(Intent(this, DashboardActivity::class.java))
+                1 -> fetchRecapFromServer()
+                2 -> performLogout()
+                3 -> d.dismiss()
+            }
+        }.show()
+    }
+
+    // PERBAIKAN: Gunakan .api(this)
+    private fun fetchRecapFromServer() {
+        val loading = android.app.ProgressDialog(this); loading.setMessage("Sinkronisasi..."); loading.show()
         RetrofitClient.api(this).syncShift(currentShiftId).enqueue(object : Callback<SyncShiftResponse> {
             override fun onResponse(call: Call<SyncShiftResponse>, response: Response<SyncShiftResponse>) {
                 loading.dismiss()
                 if (response.isSuccessful && response.body() != null) {
-                    val data = response.body()!!
-
-                    // Update data lokal dengan data server yang PASTI BENAR
-                    localCashSales = data.total_cash
-                    localNonCashSales = data.total_non_cash
-
-                    // Baru tampilkan dialog
+                    localCashSales = response.body()!!.total_cash
+                    localNonCashSales = response.body()!!.total_non_cash
                     showShiftRecapDialog(localCashSales, localNonCashSales)
-                } else {
-                    Toast.makeText(applicationContext, "Gagal sinkron data shift", Toast.LENGTH_SHORT).show()
                 }
             }
-
-            override fun onFailure(call: Call<SyncShiftResponse>, t: Throwable) {
-                loading.dismiss()
-                Toast.makeText(applicationContext, "Error Koneksi: ${t.message}", Toast.LENGTH_SHORT).show()
-
-                // Opsional: Tetap buka dialog dengan data lokal seadanya jika offline
-                showShiftRecapDialog(localCashSales, localNonCashSales)
-            }
+            override fun onFailure(call: Call<SyncShiftResponse>, t: Throwable) { loading.dismiss(); showShiftRecapDialog(localCashSales, localNonCashSales) }
         })
     }
-    private fun showShiftRecapDialog(c: Double, n: Double) { val v = LayoutInflater.from(this).inflate(R.layout.dialog_shift_recap, null); val d = AlertDialog.Builder(this).setView(v).create(); d.setCancelable(false); v.findViewById<TextView>(R.id.tvShiftInitial).text=formatRupiah(currentInitialCash); v.findViewById<TextView>(R.id.tvShiftCashSales).text=formatRupiah(c); v.findViewById<TextView>(R.id.tvShiftTotalCash).text=formatRupiah(currentInitialCash+c); v.findViewById<TextView>(R.id.tvShiftNonCash).text=formatRupiah(n); v.findViewById<Button>(R.id.btnShiftBack).setOnClickListener{d.dismiss()}; v.findViewById<Button>(R.id.btnShiftClose).setOnClickListener{d.dismiss(); endShiftOnServer()}; v.findViewById<Button>(R.id.btnPrintRekap).setOnClickListener { printRekapBluetooth(c, n) }; d.show() }
-    private fun endShiftOnServer() { RetrofitClient.api(this).endShift(EndShiftRequest(currentShiftId)).enqueue(object : Callback<EndShiftResponse> { override fun onResponse(call: Call<EndShiftResponse>, response: Response<EndShiftResponse>) { if(response.isSuccessful) performLogout() }; override fun onFailure(call: Call<EndShiftResponse>, t: Throwable) {} }) }
-    private fun performLogout() { startActivity(Intent(this, LoginActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK }); finish() }
+
+    private fun showShiftRecapDialog(c: Double, n: Double) {
+        val v = LayoutInflater.from(this).inflate(R.layout.dialog_shift_recap, null)
+        val d = AlertDialog.Builder(this).setView(v).create(); d.setCancelable(false)
+        v.findViewById<TextView>(R.id.tvShiftInitial).text=formatRupiah(currentInitialCash)
+        v.findViewById<TextView>(R.id.tvShiftCashSales).text=formatRupiah(c)
+        v.findViewById<TextView>(R.id.tvShiftTotalCash).text=formatRupiah(currentInitialCash+c)
+        v.findViewById<TextView>(R.id.tvShiftNonCash).text=formatRupiah(n)
+        v.findViewById<Button>(R.id.btnShiftBack).setOnClickListener{d.dismiss()}
+        v.findViewById<Button>(R.id.btnShiftClose).setOnClickListener{d.dismiss(); endShiftOnServer()}
+        v.findViewById<Button>(R.id.btnPrintRekap).setOnClickListener { printRekapBluetooth(c, n) }
+        d.show()
+    }
+
+    // PERBAIKAN: Gunakan .api(this)
+    private fun endShiftOnServer() {
+        RetrofitClient.api(this).endShift(EndShiftRequest(currentShiftId)).enqueue(object : Callback<EndShiftResponse> {
+            override fun onResponse(call: Call<EndShiftResponse>, response: Response<EndShiftResponse>) {
+                if(response.isSuccessful) performLogout()
+            }
+            override fun onFailure(call: Call<EndShiftResponse>, t: Throwable) {}
+        })
+    }
+
+    private fun performLogout() {
+        startActivity(Intent(this, LoginActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK }); finish()
+    }
 
     private fun printRekapBluetooth(c: Double, n: Double) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) { ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1); return }
-        try { val conn = BluetoothPrintersConnections.selectFirstPaired(); if (conn != null) { val p = EscPosPrinter(conn, 203, 48f, 32); try { p.printFormattedText("[C]<b>LAPORAN TUTUP SHIFT</b>\n[C]================================\n[L]Kasir:[R]$cashierName\n[L]Waktu:[R]${SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date())}\n[C]--------------------------------\n[L]<b>1. UANG FISIK</b>\n[L]Modal:[R]${formatRupiah(currentInitialCash)}\n[L]Tunai:[R]${formatRupiah(c)}\n[R]----------------\n[L]<b>TOTAL LACI:</b>[R]<b>${formatRupiah(currentInitialCash+c)}</b>\n[C]--------------------------------\n[L]<b>2. BANK (NON-TUNAI)</b>\n[L]QRIS/Kartu:[R]${formatRupiah(n)}\n[C]--------------------------------\n[L]<b>TOTAL OMZET:</b>[R]<b>${formatRupiah(c+n)}</b>\n[C]================================") } finally { p.disconnectPrinter() } } } catch (e: Exception) {}
+        try { val conn = BluetoothPrintersConnections.selectFirstPaired(); if (conn != null) { val p = EscPosPrinter(conn, 203, 48f, 32); try { p.printFormattedText("[C]<b>LAPORAN SHIFT</b>\n[C]================================\n[L]Kasir:[R]$cashierName\n[L]Waktu:[R]${SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date())}\n[C]--------------------------------\n[L]<b>1. UANG FISIK</b>\n[L]Modal:[R]${formatRupiah(currentInitialCash)}\n[L]Tunai:[R]${formatRupiah(c)}\n[R]----------------\n[L]<b>TOTAL LACI:</b>[R]<b>${formatRupiah(currentInitialCash+c)}</b>\n[C]--------------------------------\n[L]<b>2. BANK</b>\n[L]Non-Tunai:[R]${formatRupiah(n)}\n[C]--------------------------------\n[L]<b>OMZET:</b>[R]<b>${formatRupiah(c+n)}</b>\n[C]================================") } finally { p.disconnectPrinter() } } } catch (e: Exception) {}
     }
+
     private fun updateTotalUI() {
         val total = cartList.sumOf { it.price }
         tvTotalAmount.text = formatRupiah(total)
         btnCheckout.text = if (cartList.isNotEmpty()) "BAYAR (${cartList.size})" else "BAYAR"
     }
+
     private fun setupCategoryTabs() {
         llCategories.removeAllViews()
         val categories = fullProductList.map { it.category?.name }.distinct().filterNotNull().toMutableList()
@@ -574,73 +560,27 @@ class MainActivity : AppCompatActivity() {
             btn.setOnClickListener {
                 if (catName == "SEMUA") productAdapter.updateData(fullProductList)
                 else productAdapter.updateData(fullProductList.filter { it.category?.name == catName })
-
-                // Visual Feedback
-                for (i in 0 until llCategories.childCount) {
-                    val child = llCategories.getChildAt(i) as Button
-                    child.setBackgroundColor(Color.LTGRAY); child.setTextColor(Color.BLACK)
-                }
+                for (i in 0 until llCategories.childCount) { (llCategories.getChildAt(i) as Button).apply { setBackgroundColor(Color.LTGRAY); setTextColor(Color.BLACK) } }
                 btn.setBackgroundColor(Color.parseColor("#2196F3")); btn.setTextColor(Color.WHITE)
             }
             llCategories.addView(btn)
         }
     }
 
+    // PERBAIKAN: Gunakan .api(this)
     private fun loadProducts() {
         RetrofitClient.api(this).getProducts().enqueue(object : Callback<ProductResponse> {
             override fun onResponse(call: Call<ProductResponse>, response: Response<ProductResponse>) {
-                if (response.isSuccessful && response.body() != null) {
-                    // Ambil list dari dalam wrapper "data"
-                    fullProductList = response.body()!!.data
-
+                if(response.isSuccessful) {
+                    fullProductList=response.body()?.data?:emptyList()
                     productAdapter.updateData(fullProductList)
                     setupCategoryTabs()
-                } else {
-                    Toast.makeText(applicationContext, "Gagal ambil produk", Toast.LENGTH_SHORT).show()
                 }
             }
-
-            override fun onFailure(call: Call<ProductResponse>, t: Throwable) {
-                Toast.makeText(applicationContext, "Error Koneksi: ${t.message}", Toast.LENGTH_SHORT).show()
-            }
+            override fun onFailure(call: Call<ProductResponse>, t: Throwable) {}
         })
     }
-    // --- FUNGSI TAMBAHAN: AMBIL REKAP DARI SERVER ---
-    private fun fetchRecapFromServer() {
-        // Tampilkan Loading agar user tahu proses sedang berjalan
-        val loading = android.app.ProgressDialog(this)
-        loading.setMessage("Sinkronisasi Data Shift...")
-        loading.setCancelable(false)
-        loading.show()
 
-        // Panggil API Sync
-        RetrofitClient.api(this).syncShift(currentShiftId).enqueue(object : Callback<SyncShiftResponse> {
-            override fun onResponse(call: Call<SyncShiftResponse>, response: Response<SyncShiftResponse>) {
-                loading.dismiss()
-                if (response.isSuccessful && response.body() != null) {
-                    val data = response.body()!!
-
-                    // Update Data Lokal dengan Data Server yang Akurat
-                    localCashSales = data.total_cash
-                    localNonCashSales = data.total_non_cash
-
-                    // Tampilkan Dialog Rekap
-                    showShiftRecapDialog(localCashSales, localNonCashSales)
-                } else {
-                    Toast.makeText(applicationContext, "Gagal sinkron: ${response.code()}", Toast.LENGTH_SHORT).show()
-                    // Jika gagal, tetap tampilkan dialog pakai data lokal seadanya
-                    showShiftRecapDialog(localCashSales, localNonCashSales)
-                }
-            }
-
-            override fun onFailure(call: Call<SyncShiftResponse>, t: Throwable) {
-                loading.dismiss()
-                Toast.makeText(applicationContext, "Koneksi Error: ${t.message}", Toast.LENGTH_SHORT).show()
-                // Jika offline, tetap tampilkan dialog
-                showShiftRecapDialog(localCashSales, localNonCashSales)
-            }
-        })
-    }
     private fun calculateNoOfColumns(c: Context, w: Float): Int { val dm = c.resources.displayMetrics; val cols = (dm.widthPixels/dm.density/w).toInt(); return if(cols<2) 2 else cols }
     private fun formatRupiah(n: Double) = NumberFormat.getCurrencyInstance(Locale("in", "ID")).format(n)
 }

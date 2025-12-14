@@ -50,7 +50,7 @@ class LoginActivity : AppCompatActivity() {
                         val intent = Intent(this@LoginActivity, MainActivity::class.java)
                         intent.putExtra("USER_ID", user?.id)
                         intent.putExtra("USER_NAME", user?.name)
-
+                        intent.putExtra("USER_ROLE", user?.role)
                         startActivity(intent)
                         finish()
                     } else {

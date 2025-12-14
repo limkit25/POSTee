@@ -7,6 +7,10 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import okhttp3.MultipartBody
+import okhttp3.RequestBody
+import retrofit2.http.Multipart
+import retrofit2.http.Part
 
 // ==========================================
 // 1. SEMUA MODEL DATA (DITARUH DI LUAR INTERFACE)
@@ -137,6 +141,18 @@ interface ApiService {
 
     @GET("/api/dashboard")
     fun getDashboard(): Call<DashboardResponse>
+
+    // TAMBAHAN: EDIT PRODUK
+    @Multipart
+    @POST("/api/products/edit/{id}")
+    fun editProduct(
+        @Path("id") id: Int,
+        @Part("name") name: RequestBody,
+        @Part("price") price: RequestBody,
+        @Part("stock") stock: RequestBody,
+        @Part("category_id") catId: RequestBody,
+        @Part image: MultipartBody.Part? // Bisa Null jika tidak ganti gambar
+    ): Call<Any>
 }
 
 // ==========================================
